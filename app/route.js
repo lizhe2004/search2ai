@@ -38,7 +38,7 @@ const corsHeaders = {
     }
 }
 
-  function OPTIONS(req,res){
+  function OPTIONS(){
 
     const optionsResponse ={
         status: 200,
@@ -49,8 +49,11 @@ const corsHeaders = {
 }
 
  function GET(req) {
-    console.log(`收到请求: ${req.method} ${req.url}`);
-    if (req.url === '/') {
+ 
+    const url = new URL(req.url)
+ 
+    console.log(`收到请求: ${req.method} ${req.url} ${url.pathname}`);
+    if (url.pathname === '/') {
     const data = '<html><head><meta charset="UTF-8"></head><body><h1>欢迎体验基于Next的search2ai，让你的大模型自由联网！</h1></body></html>'
     const headers = {
         'Content-Type': 'text/html'
@@ -68,7 +71,7 @@ const corsHeaders = {
 
   async function POST(req)   {
     console.log(`收到请求: ${req.method} ${req.url}`);
-
+    const url = new URL(req.url)
     const apiBase = process.env.APIBASE ||  'https://api.openai.com';
     const authHeader = req.headers['authorization']; // 从请求的 headers 中获取 Authorization
 
@@ -82,8 +85,8 @@ const corsHeaders = {
     }
     let response;
     try {
-        console.log(req.url)
-        response = await handleRequest(apiBase, apiKey, req, req.url);
+        console.log(url.pathname)
+        response = await handleRequest(apiBase, apiKey, req, url.pathname);
       
     } catch (error) {
         console.error('请求处理时发生错误:', error);
