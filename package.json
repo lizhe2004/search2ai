@@ -2,9 +2,10 @@
   "name": "search2ai",
   "version": "0.1.0",
   "description": "联网大模型",
-  "main": "api/index.js",
   "scripts": {
-    "start": "node api/index.js",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "fatwang2",
@@ -13,6 +14,7 @@
     "ai": "^2.2.31",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
+    "next": "^14.2.0",
     "node-fetch": "^2.7.0",
     "pump": "^3.0.0"
   }

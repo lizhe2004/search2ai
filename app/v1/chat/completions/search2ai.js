@@ -1,10 +1,10 @@
-const fetch = require('node-fetch');
-const search = require('../units/search.js');
-const crawler = require('../units/crawler.js');
-const news = require('../units/news.js');
+import fetch from 'node-fetch'
+const search = require('../../../../units/search.js');
+const crawler = require('../../../../units/crawler.js');
+const news = require('../../../../units/news.js');
 const { config } = require('dotenv');
 const Stream = require('stream');
-
+import { createParser } from 'eventsource-parser';
 config();
 
 const corsHeaders = {
@@ -13,16 +13,14 @@ const corsHeaders = {
     'Access-Control-Allow-Headers': 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization',
     'Access-Control-Max-Age': '86400', // 预检请求结果的缓存时间
 };
-async function handleRequest(req, res, apiBase, apiKey) {
+async function handleRequest(req, apiBase, apiKey) {
     let responseSent = false;
         if (req.method !== 'POST') {
             console.log(`不支持的请求方法: ${req.method}`);
-            res.statusCode = 405;
-            res.end('Method Not Allowed');
             responseSent = true;
-            return;
+            return new Response(`不支持的请求方法: ${req.method}`, { status: 405});
         }
-    const requestData = req.body;
+    const requestData = await req.json();
     console.log('请求数据:', requestData);
     console.log('API base:', apiBase);
     const stream = requestData.stream || false;
@@ -99,29 +97,25 @@ async function handleRequest(req, res, apiBase, apiKey) {
         });
     } catch (error) {
         console.error('请求 OpenAI API 时发生错误:', error);
-        res.statusCode = 500;
-        res.end('OpenAI API 请求失败');
-        return { status: 500 };
+        return new Response('OpenAI API 请求失败', { status: 500});
+
+responseSent
     }
     if (!openAIResponse.ok) {
-        throw new Error('OpenAI API 请求失败');
+        throw new Error('OpenAI API 请求失败'+ await openAIResponse.text());
     }
 
     let data = await openAIResponse.json();
     console.log('确认解析后的 data 对象:', data);
     if (!data) {
-        console.error('OpenAI 响应没有数据');
-        res.statusCode = 500;
-        res.end('OpenAI 响应没有数据');
-        return { status: 500 };
+
     }
     console.log('OpenAI API 响应接收完成，检查是否需要调用自定义函数');
     let messages = requestData.messages;
     if (!data.choices || data.choices.length === 0 || !data.choices[0].message) {
         console.error('OpenAI 响应数据格式不正确');
-        res.statusCode = 500;
-        res.end('OpenAI 响应数据格式不正确');
-        return { status: 500 };
+        return new Response('OpenAI 响应数据格式不正确', { status: 500});
+        
     }
     
     messages.push(data.choices[0].message);
@@ -149,6 +143,7 @@ async function handleRequest(req, res, apiBase, apiKey) {
             } else if (functionName === 'news') {
                 functionResponse = await functionToCall(functionArgs.query);
             }
+            console.log(JSON.stringify(functionResponse))
             messages.push({
                 tool_call_id: toolCall.id,
                 role: "tool",
@@ -169,36 +164,32 @@ async function handleRequest(req, res, apiBase, apiKey) {
             messages: messages,
             stream: stream
         };
+        console.log(JSON.stringify(requestBody))
         try {
             let secondResponse = await fetch(`${apiBase}/v1/chat/completions`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Accept': 'application/json',
                     'Authorization': `Bearer ${apiKey}`
                 },
                 body: JSON.stringify(requestBody)
             });
             if (stream) {
                 console.log('返回流');
-                return {
-                    status: secondResponse.status,
-                    headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache',...corsHeaders },
-                    body: secondResponse.body
-                };
+                const stream_reader = await OpenAIStream(secondResponse)
+                console.log(secondResponse.headers)
+                return new Response(stream_reader, {headers: { "Content-Type": "text/event-stream",...corsHeaders}});
             }else {
                 // 使用普通 JSON 格式
                 const data = await secondResponse.json();
-                res.statusCode = secondResponse.status;
-                res.setHeader('Content-Type', 'application/json');
-                res.end(JSON.stringify(data));
+                return  Response.json(data)  
             }
         } catch (error) {
             console.error('请求处理时发生错误:', error);
             if (!responseSent) {
-                res.statusCode = 500;
-                res.end('Internal Server Error');
                 responseSent = true;
+                return new Response('Internal Server Error', { status: 500});
+                
             } return;  
         }
     } else {
@@ -208,26 +199,74 @@ async function handleRequest(req, res, apiBase, apiKey) {
             // 使用 SSE 格式
             console.log('Using SSE format');
             const sseStream = jsonToStream(data);
-            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache',
-            ...corsHeaders });
+            
 
-            sseStream.on('data', (chunk) => {
-                res.write(chunk);
-            });
+            return new Response(sseStream, {
+                headers: {
+                  "Content-Type": "text/event-stream",
+                  'Access-Control-Allow-Origin': '*',
+                  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', // 允许的HTTP方法
+                  'Access-Control-Allow-Headers': 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization',
+                  'Access-Control-Max-Age': '86400', // 预检请求结果的缓存时间
+                },
+              });
 
-            sseStream.on('end', () => {
-                res.end();
-            });
+
         } else {
             // 使用普通 JSON 格式
             console.log('Using JSON format');
-            res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders });
-            res.end(JSON.stringify(data));
+            return  Response.json(data)  
+
+
         }
 
         console.log('Response sent');
         return { status: 200 };
     }
+
+    async function OpenAIStream(res) {
+        const encoder = new TextEncoder();
+        const decoder = new TextDecoder();
+      
+        let counter = 0;
+      
+        const stream = new ReadableStream({
+          async start(controller) {
+            function onParse(event) {
+              if (event.type === "event") {
+                const data = event.data;
+                // https://beta.openai.com/docs/api-reference/completions/create#completions/create-stream
+      
+                try {
+                  const queue = encoder.encode("data: " + data + "\n\n");
+                  console.log(data)
+                  controller.enqueue(queue);
+                  counter++;
+                  if (data === "[DONE]") {
+                    controller.close();
+                    return;
+                  }
+                } catch (e) {
+                  controller.error(e);
+                }
+              }
+            }
+      
+            //     // 发送响应头到前端
+            // controller.enqueue(response);
+            // stream response (SSE) from OpenAI may be fragmented into multiple chunks
+            // this ensures we properly read chunks and invoke an event for each SSE event stream
+            const parser = createParser(onParse);
+            // https://web.dev/streams/#asynchronous-iteration
+            for await (const chunk of res.body ) {
+              parser.feed(decoder.decode(chunk));
+            }
+          },
+        });
+        return stream;
+      }
+      
+
         function jsonToStream(jsonData) {
             const characters = Array.from(jsonData.choices[0].message.content);
             let currentIndex = 0;

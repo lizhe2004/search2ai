@@ -1,4 +1,4 @@
-const fetch = require('node-fetch');
+import fetch from 'node-fetch'
 const process = require('process');
 const { config } = require('dotenv');
 config({ path: __dirname + '/../.env' });

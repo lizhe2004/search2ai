@@ -1,5 +1,4 @@
-const fetch = require('node-fetch');
-
+import fetch from 'node-fetch'
 // 爬取函数，调用你的爬取服务
 async function crawler(url) {
     console.log(`正在使用 URL 进行自定义爬取:${JSON.stringify(url)}`);
