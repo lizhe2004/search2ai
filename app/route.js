@@ -1,7 +1,6 @@
 // index.js 示例
 const fetch = require('node-fetch');
 
-import handleRequest from './v1/chat/completions/search2ai.js';
 const process = require('process');
 const Stream = require('stream');
 const http = require('http');
