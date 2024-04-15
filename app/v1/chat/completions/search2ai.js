@@ -239,7 +239,6 @@ responseSent
       
                 try {
                   const queue = encoder.encode("data: " + data + "\n\n");
-                  console.log(data)
                   controller.enqueue(queue);
                   counter++;
                   if (data === "[DONE]") {
