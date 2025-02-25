@@ -8,24 +8,61 @@
     "Access-Control-Max-Age": "86400"
     // 预检请求结果的缓存时间
   };
-  addEventListener("fetch", (event) => {
+
+  var header_auth="Authorization"; //azure use "api-key"
+  var header_auth_val="Bearer ";
+
+  // get variables from env
+  const api_type = typeof OPENAI_TYPE !== "undefined" ? OPENAI_TYPE : "openai";
+  const apiBase = typeof APIBASE !== "undefined" ? APIBASE : "https://api.openai.com";
+  const resource_name = typeof RESOURCE_NAME !== "undefined" ? RESOURCE_NAME : "xxxxx";
+  const deployName = typeof DEPLOY_NAME !== "undefined" ? DEPLOY_NAME : "gpt-35-turbo";
+  const api_ver = typeof API_VERSION !== "undefined" ? API_VERSION : "2024-03-01-preview";
+  let openai_key = typeof OPENAI_API_KEY !== "undefined" ? OPENAI_API_KEY : "";
+  const azure_key = typeof AZURE_API_KEY !== "undefined" ? AZURE_API_KEY : "";
+  const auth_keys = typeof AUTH_KEYS !== "undefined" ? AUTH_KEYS : [""];
+  
+  let fetchAPI = "";
+  let request_header = new Headers({
+    "Content-Type": "application/json",
+    "Authorization": "",
+    "api-key": ""        
+  });
+  
+  addEventListener("fetch", (event) => {     
     console.log(`\u6536\u5230\u8BF7\u6C42: ${event.request.method} ${event.request.url}`);
     const url = new URL(event.request.url);
     if (event.request.method === "OPTIONS") {
       return event.respondWith(handleOptions());
     }
-    const apiBase = typeof APIBASE !== "undefined" ? APIBASE : "https://api.openai.com";
+
     const authHeader = event.request.headers.get("Authorization");
     let apiKey = "";
     if (authHeader) {
       apiKey = authHeader.split(" ")[1];
+      if (!auth_keys.includes(apiKey) || !openai_key) {
+        openai_key = apiKey;
+      }
     } else {
       return event.respondWith(new Response("Authorization header is missing", { status: 400, headers: corsHeaders }));
     }
-    if (url.pathname === '/v1/chat/completions') {
+
+    if ( api_type === "azure" ){
+      fetchAPI = `https://${resource_name}.openai.azure.com/openai/deployments/${deployName}/chat/completions?api-version=${api_ver}`;
+      header_auth = "api-key";
+      header_auth_val = "";
+      apiKey = azure_key;       
+    }else{ //openai
+      fetchAPI = `${apiBase}/v1/chat/completions`;
+      header_auth = "Authorization";
+      header_auth_val = "Bearer ";
+      apiKey = openai_key;
+    }    
+
+    if (url.pathname === '/v1/chat/completions') { //openai-style request
       console.log('接收到 fetch 事件');
-      event.respondWith(handleRequest(event.request, apiBase, apiKey));
-    } else {
+      event.respondWith(handleRequest(event.request, fetchAPI, apiKey));
+    } else { //other request
       event.respondWith(handleOtherRequest(apiBase, apiKey, event.request, url.pathname).then((response) => {
         return new Response(response.body, {
           status: response.status,
@@ -43,7 +80,12 @@
   async function handleOtherRequest(apiBase, apiKey, request, pathname) {
     const headers = new Headers(request.headers);
     headers.delete("Host");
-    headers.set("Authorization", `Bearer ${apiKey}`);
+    if ( api_type === "azure"){
+      headers.set("api-key", `${apiKey}`);
+    }else{
+      headers.set("Authorization", `Bearer ${apiKey}`);
+    }
+    
     const response = await fetch(`${apiBase}${pathname}`, {
       method: request.method,
       headers,
@@ -65,87 +107,266 @@
     }
   }
   async function search(query) {
-    console.log(`正在使用查询进行自定义搜索: ${JSON.stringify(query)}`);
+    console.log(`正在使用 ${SEARCH_SERVICE} 进行自定义搜索: ${JSON.stringify(query)}`);    
     try {
-      const response = await fetch("https://search.search2ai.one", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": typeof SEARCH1API_KEY !== "undefined" ? `Bearer ${SEARCH1API_KEY}` : "",
-          "google_cx": typeof GOOGLE_CX !== "undefined" ? GOOGLE_CX : "",
-          "google_key": typeof GOOGLE_KEY !== "undefined" ? GOOGLE_KEY : "",
-          "serpapi_key": typeof SERPAPI_KEY !== "undefined" ? SERPAPI_KEY : "",
-          "serper_key": typeof SERPER_KEY !== "undefined" ? SERPER_KEY : "",
-          "bing_key": typeof BING_KEY !== "undefined" ? BING_KEY : "",
-          "apibase": typeof APIBASE !== "undefined" ? APIBASE : "https://api.openai.com"
-        },
-        body: JSON.stringify({
-          query,
-          search_service: SEARCH_SERVICE,
-          max_results: typeof MAX_RESULTS !== "undefined" ? MAX_RESULTS : "5",
-          crawl_results:typeof CRAWL_RESULTS !== "undefined" ? MAX_RESULTS : "0",
-        })
-      });
-      if (!response.ok) {
-        console.error(`API 请求失败, 状态码: ${response.status}`);
-        return `API 请求失败, 状态码: ${response.status}`;
+      let results;
+      
+      switch (SEARCH_SERVICE) {
+        case "search1api":
+          const search1apiResponse = await fetch("https://api.search1api.com/search/", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: typeof SEARCH1API_KEY !== "undefined" ? `Bearer ${SEARCH1API_KEY}` : "",
+            },
+            body: JSON.stringify({
+              query,
+              search_service: "google",
+              max_results: typeof MAX_RESULTS !== "undefined" ? MAX_RESULTS : "5",
+              crawl_results: typeof CRAWL_RESULTS !== "undefined" ? CRAWL_RESULTS : "0",
+            }),
+          });
+
+          results = await search1apiResponse.json();
+          break;          
+        case "google":
+          const googleApiUrl = `https://www.googleapis.com/customsearch/v1?cx=${GOOGLE_CX}&key=${GOOGLE_KEY}&q=${encodeURIComponent(query)}`;
+          const googleResponse = await fetch(googleApiUrl);
+          const googleData = await googleResponse.json();
+          results = googleData.items.slice(0, MAX_RESULTS).map((item) => ({
+            title: item.title,
+            link: item.link,
+            snippet: item.snippet
+          }));
+          break;
+          
+        case "bing":
+          const bingApiUrl = `https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(query)}`;
+          const bingResponse = await fetch(bingApiUrl, {
+            headers: { "Ocp-Apim-Subscription-Key": BING_KEY }
+          });
+          const bingData = await bingResponse.json();
+          results = bingData.webPages.value.slice(0, MAX_RESULTS).map((item) => ({
+            title: item.name,
+            link: item.url,
+            snippet: item.snippet
+          }));
+          break;
+          
+        case "serpapi":
+          const serpApiUrl = `https://serpapi.com/search?api_key=${SERPAPI_KEY}&engine=google&q=${encodeURIComponent(query)}&google_domain=google.com`;
+          const serpApiResponse = await fetch(serpApiUrl);
+          const serpApiData = await serpApiResponse.json();
+          results = serpApiData.organic_results.slice(0, MAX_RESULTS).map((item) => ({
+            title: item.title,
+            link: item.link,
+            snippet: item.snippet
+          }));
+          break;
+          
+        case "serper":
+          const gl = typeof GL !== "undefined" ? GL : "us";
+          const hl = typeof HL !== "undefined" ? HL : "en";
+          const serperApiUrl = "https://google.serper.dev/search";
+          const serperResponse = await fetch(serperApiUrl, {
+            method: "POST",
+            headers: {
+              "X-API-KEY": SERPER_KEY,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ q: query, gl: gl, hl: hl })
+          });
+          const serperData = await serperResponse.json();
+          results = serperData.organic.slice(0, MAX_RESULTS).map((item) => ({
+            title: item.title,
+            link: item.link,
+            snippet: item.snippet
+          }));
+          break;
+          
+        case "duckduckgo":
+          const duckDuckGoApiUrl = "https://ddg.search2ai.online/search";
+          const body = {
+            q: query,
+            max_results: typeof MAX_RESULTS !== "undefined" ? MAX_RESULTS : "5"
+          };
+          const duckDuckGoResponse = await fetch(duckDuckGoApiUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+          });
+          const duckDuckGoData = await duckDuckGoResponse.json();
+          results = duckDuckGoData.results.map((item) => ({
+            title: item.title,
+            link: item.href,
+            snippet: item.body
+          }));
+          break;
+        
+        case "searxng":
+          const searXNGUrl = `${SEARXNG_BASE_URL}/search?q=${encodeURIComponent(
+            query
+        )}&category=general&format=json`;
+        const searXNGResponse = await fetch(searXNGUrl);
+          const searXNGData = await searXNGResponse.json();
+          results = searXNGData.results.slice(0, MAX_RESULTS).map((item) => ({
+            title: item.title,
+            link: item.url,
+            snippet: item.content
+          }));
+          break;
+          
+        default:
+          console.error(`不支持的搜索服务: ${SEARCH_SERVICE}`);
+          return `不支持的搜索服务: ${SEARCH_SERVICE}`;
       }
-      const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
-        console.error("收到的响应不是有效的 JSON 格式");
-        return "收到的响应不是有效的 JSON 格式";
-      }
-      const data = await response.json();
-      console.log('自定义搜索服务调用完成');
+      
+      const data = {
+        results: results
+      };
+      
       return JSON.stringify(data);
+      
     } catch (error) {
       console.error(`在 search 函数中捕获到错误: ${error}`);
       return `在 search 函数中捕获到错误: ${error}`;
     }
   }
   async function news(query) {
-    console.log(`正在使用查询进行新闻搜索: ${JSON.stringify(query)}`);
+    console.log(`正在使用 ${SEARCH_SERVICE} 进行新闻搜索: ${JSON.stringify(query)}`);
+    
     try {
-      const response = await fetch("https://search.search2ai.one/news", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": typeof SEARCH1API_KEY !== "undefined" ? `Bearer ${SEARCH1API_KEY}` : "",
-          "google_cx": typeof GOOGLE_CX !== "undefined" ? GOOGLE_CX : "",
-          "google_key": typeof GOOGLE_KEY !== "undefined" ? GOOGLE_KEY : "",
-          "serpapi_key": typeof SERPAPI_KEY !== "undefined" ? SERPAPI_KEY : "",
-          "serper_key": typeof SERPER_KEY !== "undefined" ? SERPER_KEY : "",
-          "bing_key": typeof BING_KEY !== "undefined" ? BING_KEY : "",
-          "apibase": typeof APIBASE !== "undefined" ? APIBASE : "https://api.openai.com"
-        },
-        body: JSON.stringify({
-          query,
-          search_service: SEARCH_SERVICE,
-          max_results: typeof MAX_RESULTS !== "undefined" ? MAX_RESULTS : "10",
-          crawl_results:typeof CRAWL_RESULTS !== "undefined" ? MAX_RESULTS : "0",
-        })
-      });
-      if (!response.ok) {
-        console.error(`API 请求失败, 状态码: ${response.status}`);
-        return `API 请求失败, 状态码: ${response.status}`;
+      let results;
+      
+      switch (SEARCH_SERVICE) {
+        case "search1api":
+          const search1apiResponse = await fetch("https://api.search1api.com/news", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: typeof SEARCH1API_KEY !== "undefined" ? `Bearer ${SEARCH1API_KEY}` : "",
+            },
+            body: JSON.stringify({
+              query,
+              max_results: typeof MAX_RESULTS !== "undefined" ? MAX_RESULTS : "10",
+              crawl_results: typeof CRAWL_RESULTS !== "undefined" ? CRAWL_RESULTS : "0",
+            }),
+          });
+          results = await search1apiResponse.json();
+          break;
+          
+        case "google":
+          const googleApiUrl = `https://www.googleapis.com/customsearch/v1?cx=${GOOGLE_CX}&key=${GOOGLE_KEY}&q=${encodeURIComponent(query)}&tbm=nws`;
+          const googleResponse = await fetch(googleApiUrl);
+          const googleData = await googleResponse.json();
+          results = googleData.items.slice(0, MAX_RESULTS).map((item) => ({
+            title: item.title,
+            link: item.link,
+            snippet: item.snippet
+          }));
+          break;
+          
+        case "bing":
+          const bingApiUrl = `https://api.bing.microsoft.com/v7.0/news/search?q=${encodeURIComponent(query)}`;
+          const bingResponse = await fetch(bingApiUrl, {
+            headers: { "Ocp-Apim-Subscription-Key": BING_KEY }
+          });
+          const bingData = await bingResponse.json();
+          results = bingData.value.slice(0, MAX_RESULTS).map((item) => ({
+            title: item.name,
+            link: item.url,
+            snippet: item.description
+          }));
+          break;
+          
+        case "serpapi":
+          const serpApiUrl = `https://serpapi.com/search?api_key=${SERPAPI_KEY}&engine=google_news&q=${encodeURIComponent(query)}&google_domain=google.com`;
+          const serpApiResponse = await fetch(serpApiUrl);
+          const serpApiData = await serpApiResponse.json();
+          results = serpApiData.news_results.slice(0, MAX_RESULTS).map((item) => ({
+            title: item.title,
+            link: item.link,
+            snippet: item.snippet
+          }));
+          break;
+          
+        case "serper":
+          const gl = typeof GL !== "undefined" ? GL : "us";
+          const hl = typeof HL !== "undefined" ? HL : "en";
+          const serperApiUrl = "https://google.serper.dev/news";
+          const serperResponse = await fetch(serperApiUrl, {
+            method: "POST",
+            headers: {
+              "X-API-KEY": SERPER_KEY,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ q: query, gl: gl, hl: hl })
+          });
+          const serperData = await serperResponse.json();
+          results = serperData.news.slice(0, MAX_RESULTS).map((item) => ({
+            title: item.title,
+            link: item.link,
+            snippet: item.snippet
+          }));
+          break;
+          
+        case "duckduckgo":
+          const duckDuckGoApiUrl = "https://ddg.search2ai.online/searchNews";
+          const body = {
+            q: query,
+            max_results: typeof MAX_RESULTS !== "undefined" ? MAX_RESULTS : "10"
+          };
+          const duckDuckGoResponse = await fetch(duckDuckGoApiUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+          });
+          const duckDuckGoData = await duckDuckGoResponse.json();
+          results = duckDuckGoData.results.map((item) => ({
+            title: item.title,
+            link: item.url,
+            snippet: item.body
+          }));
+          break;
+
+        case "searxng":
+          const searXNGUrl = `${SEARXNG_BASE_URL}/search?q=${encodeURIComponent(
+            query
+        )}&category=news&format=json`;
+        const searXNGResponse = await fetch(searXNGUrl);
+          const searXNGData = await searXNGResponse.json();
+          results = searXNGData.results.slice(0, MAX_RESULTS).map((item) => ({
+            title: item.title,
+            link: item.url,
+            snippet: item.content
+          }));
+          break;
+          
+        default:
+          console.error(`不支持的搜索服务: ${SEARCH_SERVICE}`);
+          return `不支持的搜索服务: ${SEARCH_SERVICE}`;
       }
-      const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
-        console.error("收到的响应不是有效的 JSON 格式");
-        return "收到的响应不是有效的 JSON 格式";
-      }
-      const data = await response.json();
+      
+      const data = {
+        results: results
+      };
+      
       console.log('新闻搜索服务调用完成');
       return JSON.stringify(data);
+      
     } catch (error) {
-      console.error(`\u5728 news \u51FD\u6570\u4E2D\u6355\u83B7\u5230\u9519\u8BEF: ${error}`);
-      return `\u5728 news \u51FD\u6570\u4E2D\u6355\u83B7\u5230\u9519\u8BEF: ${error}`;
+      console.error(`在 news 函数中捕获到错误: ${error}`);
+      return `在 news 函数中捕获到错误: ${error}`;
     }
   }
-  async function crawer(url) {
+  async function crawler(url) {
     console.log(`\u6B63\u5728\u4F7F\u7528 URL \u8FDB\u884C\u81EA\u5B9A\u4E49\u722C\u53D6:${JSON.stringify(url)}`);
     try {
-      const response = await fetch("https://crawler.search2ai.online", {
+      const response = await fetch("https://crawl.search1api.com", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -168,15 +389,17 @@
       return JSON.stringify(data);
     } catch (error) {
       console.error(`\u5728 crawl \u51FD\u6570\u4E2D\u6355\u83B7\u5230\u9519\u8BEF: ${error}`);
-      return `\u5728 crawer \u51FD\u6570\u4E2D\u6355\u83B7\u5230\u9519\u8BEF: ${error}`;
+      return `\u5728 crawler \u51FD\u6570\u4E2D\u6355\u83B7\u5230\u9519\u8BEF: ${error}`;
     }
   }
-  async function handleRequest(request, apiBase, apiKey) {
+  async function handleRequest(request, fetchAPI, apiKey) {
+
     console.log(`\u5F00\u59CB\u5904\u7406\u8BF7\u6C42: ${request.method} ${request.url}`);
     if (request.method !== "POST") {
       console.log(`\u4E0D\u652F\u6301\u7684\u8BF7\u6C42\u65B9\u6CD5: ${request.method}`);
       return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
     }
+
     const requestData = await request.json();
     console.log("\u8BF7\u6C42\u6570\u636E:", requestData);
     const stream = requestData.stream || false;
@@ -201,7 +424,10 @@
               parameters: {
                 type: "object",
                 properties: {
-                  query: { type: "string", "description": "The query to search." }
+                  query: { 
+                    type: "string", 
+                    "description": "The query to search." 
+                  }
                 },
                 required: ["query"]
               }
@@ -215,7 +441,10 @@
               parameters: {
                 type: "object",
                 properties: {
-                  query: { type: "string", description: "The query to search for news." }
+                  query: { 
+                    type: "string", 
+                    description: "The query to search for news." 
+                  }
                 },
                 required: ["query"]
               }
@@ -224,7 +453,7 @@
           {
             type: "function",
             function: {
-              name: "crawer",
+              name: "crawler",
               description: "Get the content of a specified url",
               parameters: {
                 type: "object",
@@ -241,16 +470,17 @@
         ],
         tool_choice: "auto"
       }
-    });
-    if (stream) {
-      const openAIResponse = await fetch(`${apiBase}/v1/chat/completions`, {
+    });    
+
+    request_header.set(`${header_auth}`,`${header_auth_val}${apiKey}`);
+
+    if (stream) {   
+      const openAIResponse = await fetch(fetchAPI, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`
-        },
+        headers: request_header,
         body
       });
+      
       let messages = requestData.messages;
       let toolCalls = [];
       let currentToolCall = null;
@@ -264,15 +494,46 @@
       let shouldDirectlyReturn = true; // 默认直接返回
 
       async function processFirstBlock() {
-        const { value, done } = await reader.read();
+        const promptFilterResultsRegex = /"prompt_filter_results"/;
+        const functionRegex = /"function"/;
+      
+        let { value, done } = await reader.read();
         if (done) {
           return;
         }
-        const block = decoder.decode(value, { stream: true });
+        let block = decoder.decode(value, { stream: true });
         buffer += block;
-        if (buffer.includes('"function"')) {
+      
+        if (promptFilterResultsRegex.test(buffer)) {
+          const blocks = [buffer];
+      
+          // 读取第二个块
+          while (!done) {
+            ({ value, done } = await reader.read({ size: 65536 })); // 使用更大的缓冲区大小
+            block = decoder.decode(value, { stream: true });
+            blocks.push(block);
+      
+            // 检查是否读取到第二个块的结束位置
+            if (block.includes('}')) {
+              break;
+            }
+          }
+      
+          const secondBlock = blocks.join('').slice(0, blocks.join('').lastIndexOf('}') + 1);
+      
+          // 检查第二个块是否包含 "function"
+          if (functionRegex.test(secondBlock)) {
+            shouldDirectlyReturn = false;
+            console.log("发现 function,将进行特定处理");
+          }
+      
+          // 更新缓冲区,包括第一个块和第二个块
+          buffer = blocks.join('');
+        } else if (functionRegex.test(buffer)) {
           shouldDirectlyReturn = false;
           console.log("发现 function,将进行特定处理");
+        } else {
+          return;
         }
       }
 
@@ -312,8 +573,6 @@
             function push() {
               reader.read().then(({ done, value }) => {
                 if (done) {
-                  console.log("Custom function called, processing tool calls");
-                  console.log("Function arguments:", functionArguments);
                   controller.close();
                   return;
                 }
@@ -323,9 +582,7 @@
                 // 检查是否获得完整的 JSON 字符串
                 if (functionArguments.startsWith('{"') && functionArguments.endsWith('"}')) {
                   console.log("Custom function called, processing tool calls");
-                  console.log("Function arguments:", functionArguments);
                 } else {
-                  console.log("Incomplete JSON, buffering");
                 }
 
                 controller.enqueue(value);
@@ -383,9 +640,6 @@
                   }
                 }
               } catch (err) {
-                console.error('Error parsing JSON:', err);
-                console.error('Invalid JSON string:', data);
-                console.log('Incomplete JSON, buffering');
               }
             }
           }
@@ -401,7 +655,7 @@
       const availableFunctions = {
         search: search,
         news: news,
-        crawer: crawer,
+        crawler: crawler,
       };
 
       let assistantMessage = {
@@ -422,16 +676,14 @@
             console.error("Function arguments are empty.");
             continue; // 跳过当前工具调用，继续处理下一个
           }
-          console.log("Function arguments:", toolCall.function.arguments);
           functionArgs = JSON.parse(toolCall.function.arguments);
         } catch (err) {
-          console.error("Error parsing function arguments:", err);
           continue;
         }
         let functionResponse;
         if (functionName === "search" && typeof functionArgs.query === "string") {
           functionResponse = await functionToCall(functionArgs.query);
-        } else if (functionName === "crawer" && typeof functionArgs.url === "string") {
+        } else if (functionName === "crawler" && typeof functionArgs.url === "string") {
           functionResponse = await functionToCall(functionArgs.url);
         } else if (functionName === "news" && typeof functionArgs.query === "string") {
           functionResponse = await functionToCall(functionArgs.query);
@@ -454,13 +706,9 @@
           }
         });
       }
-      console.log("Messages before sending second request:", JSON.stringify(messages, null, 2));
-      const secondResponse = await fetch(`${apiBase}/v1/chat/completions`, {
+      const secondResponse = await fetch(fetchAPI, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`
-        },
+        headers: request_header,
         body: JSON.stringify({
           model,
           messages,
@@ -475,13 +723,9 @@
         }
       });
     } else {
-      const openAIResponse = await fetch(`${apiBase}/v1/chat/completions`, {
+      const openAIResponse = await fetch(fetchAPI, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`
-          // 使用从请求的 headers 中获取的 API key
-        },
+        headers: request_header,
         body
       });
       if (openAIResponse.status !== 200) {
@@ -506,7 +750,7 @@
         const availableFunctions = {
           "search": search,
           "news": news,
-          "crawer": crawer
+          "crawler": crawler
         };
         for (const toolCall of toolCalls) {
           const functionName = toolCall.function.name;
@@ -515,7 +759,7 @@
           let functionResponse;
           if (functionName === "search") {
             functionResponse = await functionToCall(functionArgs.query);
-          } else if (functionName === "crawer") {
+          } else if (functionName === "crawler") {
             functionResponse = await functionToCall(functionArgs.url);
           } else if (functionName === "news") {
             functionResponse = await functionToCall(functionArgs.query);
@@ -526,25 +770,20 @@
             name: functionName,
             content: functionResponse
           });
-          if (functionName === "search" || functionName === "crawer" || functionName === "news") {
+          if (functionName === "search" || functionName === "crawler" || functionName === "news") {
             calledCustomFunction = true;
           }
         }
       }
       if (calledCustomFunction) {
         console.log("\u51C6\u5907\u53D1\u9001\u7B2C\u4E8C\u6B21 OpenAI API \u8BF7\u6C42");
-        console.log("Messages before sending second request:", JSON.stringify(messages, null, 2));
         const requestBody = {
           model,
           messages
         };
-        const secondResponse = await fetch(`${apiBase}/v1/chat/completions`, {
+        const secondResponse = await fetch(fetchAPI, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Authorization": `Bearer ${apiKey}`
-          },
+          headers: request_header,
           body: JSON.stringify(requestBody)
         });
         console.log("\u54CD\u5E94\u72B6\u6001\u7801: 200");
